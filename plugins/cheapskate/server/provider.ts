@@ -519,7 +519,28 @@ class Session {
     const initialSelection = startingBackend(eligible, canStay ? active : undefined, limits, preset.autoReturn, tryPrimary, Date.now());
     const first = chain.indexOf(initialSelection);
     const sourceSelection = this.state.lastSelection ?? oldWorker?.selection ?? primary;
-    const source = this.backend ?? await readControls(paseo, sourceSelection, this.config.cwd, this.selected.options);
+    let source = this.backend;
+    if (!source) {
+      const { cwd } = this.config;
+      const readSource = () => readControls(paseo, sourceSelection, cwd, this.selected.options);
+      try {
+        source = await readSource();
+      } catch (error) {
+        if (signal.aborted) return "canceled";
+        if (!(error instanceof Error) || !/^OpenCode location .+ did not activate within \d+ms$/.test(error.message)) {
+          throw error;
+        }
+        // Paseo can retain a failed cold-start snapshot after the location can be opened.
+        try {
+          await paseo.providers.refresh({ cwd, providers: [sourceSelection.split("/", 1)[0]] });
+        } catch {
+          if (signal.aborted) return "canceled";
+          throw error;
+        }
+        if (signal.aborted) return "canceled";
+        source = await readSource();
+      }
+    }
     const intent = {
       mode: this.selected.mode ?? source.defaultMode,
       thinking: this.selected.thinking ?? source.defaultThinking,
