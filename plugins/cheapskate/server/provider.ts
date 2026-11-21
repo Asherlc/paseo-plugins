@@ -538,7 +538,12 @@ class Session {
           throw error;
         }
         if (signal.aborted) return "canceled";
-        source = await readSource();
+        try {
+          source = await readSource();
+        } catch (retryError) {
+          if (signal.aborted) return "canceled";
+          throw retryError;
+        }
       }
     }
     const intent = {
@@ -633,6 +638,11 @@ class Session {
       delete limits[selection];
       worker.inFlight = true;
       await this.save();
+      if (signal.aborted) {
+        worker.inFlight = false;
+        this.state.worker = existing;
+        return "canceled";
+      }
 
       try {
         // The daemon and its plugins supply the new backend's own identity and thread storage.

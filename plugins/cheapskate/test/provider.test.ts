@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -64,15 +66,32 @@ test("a turn recovers from a timed-out workspace OpenCode catalog", async (t) =>
   const backend = "opencode/opencode/hy4-flash-free";
   const timeout = `OpenCode location ${cwd} did not activate within 30000ms`;
   const cases = [
-    { name: "refreshes the scoped catalog and uses the requested controls", error: timeout, recovers: true, refresh: true },
-    { name: "stops after one refresh if the timeout persists", error: timeout, recovers: false, refresh: true },
-    { name: "leaves unrelated errors alone", error: "OpenCode is disabled", recovers: false, refresh: false },
+    { name: "refreshes the scoped catalog and uses the requested controls", error: timeout, recovers: true, refresh: true, pauseAt: null },
+    { name: "stops after one refresh if the timeout persists", error: timeout, recovers: false, refresh: true, pauseAt: null },
+    { name: "leaves unrelated errors alone", error: "OpenCode is disabled", recovers: false, refresh: false, pauseAt: null },
+    { name: "cancels when the interrupted retry fails", error: timeout, recovers: false, refresh: true, pauseAt: "retry" },
+    { name: "cancels before launching an agent if interrupted while saving", error: timeout, recovers: true, refresh: true, pauseAt: "checkpoint" },
   ];
 
   for (const scenario of cases) {
-    await t.test(scenario.name, async () => {
+    await t.test(scenario.name, { timeout: 5000 }, async (t) => {
       const refreshes: unknown[] = [];
       const launches: unknown[] = [];
+      const paused = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      if (scenario.pauseAt === "checkpoint") {
+        const writeFile = fs.writeFile;
+        let firstWrite = true;
+        t.mock.method(fs, "writeFile", async (...args: Parameters<typeof writeFile>) => {
+          if (firstWrite) {
+            firstWrite = false;
+            paused.resolve();
+            await resume.promise;
+          }
+          return writeFile(...args);
+        });
+        syncBuiltinESMExports();
+      }
       const refresh = async (options: unknown) => { refreshes.push(options); };
       const owner = {
         agent: { workspaceId: "workspace", metadata: {} },
@@ -82,12 +101,18 @@ test("a turn recovers from a timed-out workspace OpenCode catalog", async (t) =>
       };
       type BackendEvent = { event: { type: "turn_started" | "turn_completed"; turnId: string } };
       const paseo = {
-        agents: { ref: () => owner },
+        agents: { ref: (id: string) => id === scenario.name ? owner : { refresh: async () => null } },
         config: { get: async () => ({ config: {} }) },
         providers: {
-          listModels: async () => scenario.recovers && refreshes.length
-            ? { models: [{ id: "opencode/hy4-flash-free", label: "Hy4 Flash Free" }] }
-            : { error: scenario.error },
+          listModels: async () => {
+            if (refreshes.length && scenario.pauseAt === "retry") {
+              paused.resolve();
+              await resume.promise;
+            }
+            return scenario.recovers && refreshes.length
+              ? { models: [{ id: "opencode/hy4-flash-free", label: "Hy4 Flash Free" }] }
+              : { error: scenario.error };
+          },
           listModes: async () => ({ modes: [{ id: "build", label: "Build" }] }),
           listControls: async () => ({ options: { auto_accept: false } }),
           snapshot: async () => ({ entries: [] }),
@@ -140,16 +165,31 @@ test("a turn recovers from a timed-out workspace OpenCode catalog", async (t) =>
             input: { type: "message", content: [{ type: "text", text: "Hello" }] },
           },
         });
+        if (scenario.pauseAt) {
+          await paused.promise;
+          const interrupted = connection.send({ type: "session.interrupt", requestId: "interrupt", sessionId: "session" });
+          resume.resolve();
+          await interrupted;
+        }
         const outcome = await finished.promise;
-        assert.equal(outcome.state, scenario.recovers ? "completed" : "failed");
-        assert.equal(outcome.error?.message, scenario.recovers ? undefined : scenario.error);
+        const expected = scenario.pauseAt ? "canceled" : scenario.recovers ? "completed" : "failed";
+        assert.equal(outcome.state, expected);
+        assert.equal(outcome.error?.message, expected === "failed" ? scenario.error : undefined);
         assert.deepEqual(refreshes, scenario.refresh ? [{ cwd, providers: ["opencode"] }] : []);
         assert.deepEqual(launches.map((launch) => {
           const { provider, modeId, options } = launch as { provider: string; modeId: string; options: unknown };
           return { provider, modeId, options };
-        }), scenario.recovers ? [{ provider: backend, modeId: "build", options: { auto_accept: true } }] : []);
+        }), expected === "completed" ? [{ provider: backend, modeId: "build", options: { auto_accept: true } }] : []);
       } finally {
-        await connection.close();
+        resume.resolve();
+        try {
+          await connection.close();
+        } finally {
+          if (scenario.pauseAt === "checkpoint") {
+            t.mock.restoreAll();
+            syncBuiltinESMExports();
+          }
+        }
       }
     });
   }
