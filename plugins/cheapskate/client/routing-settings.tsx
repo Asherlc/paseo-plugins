@@ -8,6 +8,7 @@ import { Pressable, Text, View } from "react-native";
 import { defaultModel, listPresets, preferences, providerId, type BackendCost, type Preset } from "../shared/settings";
 import { formatChain, moveRow, readRows, searchModels, type CatalogModel, type ChainRow } from "./chain-picker";
 import { ChainCheck } from "./chain-check";
+import { Usage } from "./usage";
 
 type ReadySettings = Extract<ReturnType<typeof useSettings<typeof preferences.schema>>, { status: "ready" }>;
 type Theme = PluginSurfaceProps["theme"];
@@ -16,22 +17,27 @@ type Catalog = Awaited<ReturnType<ReturnType<typeof usePaseo>["providers"]["snap
 export function RoutingSettings({ host, theme }: PluginSurfaceProps) {
   const settings = useSettings(preferences);
   const [selectedId, setSelectedId] = useState(defaultModel.id);
-  if (settings.status === "ready") {
-    return <RoutingForm key={`${host.id}:${settings.revision}`} theme={theme} settings={settings}
-      selectedId={selectedId} setSelectedId={setSelectedId} />;
-  }
-  if (settings.status === "loading") {
-    return <Text style={{ color: theme.colors.foregroundMuted }}>Loading routing settings…</Text>;
-  }
-  return (
-    <View style={{ gap: 12, padding: 16 }}>
-      <Text style={{ color: theme.colors.foreground }}>{settings.error}</Text>
-      <SettingsAction label="Routing settings" actionLabel="Reload" onPress={() => void settings.reload()} />
-      {settings.status === "invalid" && (
-        <SettingsAction label="Clear saved settings" actionLabel="Reset" onPress={() => void settings.reset()} />
-      )}
+  const [usageOpen, setUsageOpen] = useState(false);
+  return <>
+    <View style={{ padding: 16, paddingBottom: 0 }}>
+      <SettingsAction label="All-time token usage" actionLabel="View usage" onPress={() => setUsageOpen(true)} />
     </View>
-  );
+    {usageOpen && <Usage key={host.id} theme={theme} close={() => setUsageOpen(false)} />}
+    {settings.status === "ready" ? (
+      <RoutingForm key={`${host.id}:${settings.revision}`} theme={theme} settings={settings}
+        selectedId={selectedId} setSelectedId={setSelectedId} />
+    ) : settings.status === "loading" ? (
+      <Text style={{ color: theme.colors.foregroundMuted }}>Loading routing settings…</Text>
+    ) : (
+      <View style={{ gap: 12, padding: 16 }}>
+        <Text style={{ color: theme.colors.foreground }}>{settings.error}</Text>
+        <SettingsAction label="Routing settings" actionLabel="Reload" onPress={() => void settings.reload()} />
+        {settings.status === "invalid" && (
+          <SettingsAction label="Clear saved settings" actionLabel="Reset" onPress={() => void settings.reset()} />
+        )}
+      </View>
+    )}
+  </>;
 }
 
 function useProviderCatalog() {

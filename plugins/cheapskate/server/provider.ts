@@ -13,6 +13,7 @@ import {
   type ProviderRegistration,
   type ProviderSessionConfig,
   type ProviderTimelineItem,
+  type ProviderUsage,
 } from "@getpaseo/plugin/server/provider";
 import { billingDecision, defaultModel, parseChain, primarySelection, providerId, type Preset } from "../shared/settings.ts";
 import { activeRoute, activeRouteKey, handledPrimaryKey, primaryRequestKey, quotaResetsKey, type RouteChange } from "../shared/route-status.ts";
@@ -20,6 +21,7 @@ import { receiptKind, receiptSchema, type Receipt, type RouteStep } from "../sha
 import { parseMessage, runBackend, type PaseoApi } from "./backend.ts";
 import { createCheckpoint, type Checkpoint } from "./checkpoint.ts";
 import { closestThinking, readControls, routePermissions, type BackendControls, type Options } from "./controls.ts";
+import type { UsageStore } from "./usage.ts";
 import { canFallback, handoffPrompt, providerResetAt, startingBackend } from "./routing.ts";
 
 export const ownerEnvKey = "CHEAPSKATE_OWNER_AGENT_ID";
@@ -70,6 +72,7 @@ const historyLimit = 300;
 type Dependencies = {
   getPresets(): Promise<Preset[]>;
   getPaseo(): PaseoApi | undefined;
+  usage?: UsageStore;
 };
 
 async function profileConfig(config: ProviderSessionConfig, dependencies: Dependencies) {
@@ -478,6 +481,17 @@ class Session {
     await this.save();
   }
 
+  private recordUsage(backend: BackendControls, usage?: ProviderUsage) {
+    const store = this.dependencies.usage;
+    if (!store) return;
+    try {
+      store.record({ providerId: backend.id, modelId: backend.modelId, usage });
+    } catch (error) {
+      // Usage is observability only: never disturb routing, receipts, or the session.
+      console.warn("cheapskate: could not record token usage", error);
+    }
+  }
+
   private async run(turn: Turn, message: ReturnType<typeof parseMessage>): Promise<"completed" | "canceled"> {
     const signal = turn.stop.signal;
     const presets = await this.dependencies.getPresets();
@@ -709,8 +723,9 @@ class Session {
           agent, sessionId: this.id, turnId: turn.id, attemptId, message: prompt, signal,
           emit: (event) => event.type === "timeline.item" ? this.record(event.item) : this.emit(event),
         });
-        if (outcome.state === "completed" && !signal.aborted) {
-          const updated = await agent.refresh().catch(() => null);
+        if (outcome.state === "completed") {
+          if (outcome.usage) this.recordUsage(backend, outcome.usage);
+          const updated = signal.aborted ? null : await agent.refresh().catch(() => null);
           if (updated) {
             const liveMode = agent.runtimeInfo?.modeId;
             const liveThinking = agent.runtimeInfo?.thinkingOptionId;
@@ -721,13 +736,14 @@ class Session {
             this.selected = requested;
             this.publishConfig();
           }
+          const latestUsage = updated ? agent.lastUsage ?? undefined : undefined;
+          // Paseo keeps the last snapshot even when the provider is silent on a later turn.
+          // Only attribute snapshot usage when a fresh worker or a changed snapshot identifies it.
+          const snapshotUsage = !existing || (worker.lastUsage !== undefined && !isDeepStrictEqual(worker.lastUsage, latestUsage ?? null))
+            ? latestUsage : undefined;
+          if (!outcome.usage) this.recordUsage(backend, signal.aborted ? undefined : snapshotUsage);
           if (!signal.aborted) {
             worker.inFlight = false;
-            const latestUsage = updated ? agent.lastUsage ?? undefined : undefined;
-            // Paseo keeps the last snapshot even when the provider is silent on a later turn.
-            // Only attribute snapshot usage when a fresh worker or a changed snapshot identifies it.
-            const snapshotUsage = !existing || (worker.lastUsage !== undefined && !isDeepStrictEqual(worker.lastUsage, latestUsage ?? null))
-              ? latestUsage : undefined;
             if (updated) worker.lastUsage = latestUsage ?? null;
             if (!outcome.usage && snapshotUsage) {
               this.emit({ type: "session.usage", sessionId: this.id, turnId: turn.id, usage: snapshotUsage });

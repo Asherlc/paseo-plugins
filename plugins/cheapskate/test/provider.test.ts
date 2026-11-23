@@ -8,6 +8,7 @@ import test from "node:test";
 import { PROVIDER_PROTOCOL_VERSION, type ProviderEvent } from "@getpaseo/plugin/server/provider";
 import type { PaseoApi } from "../server/backend.ts";
 import { createProvider, ownerEnvKey } from "../server/provider.ts";
+import { createUsageStore } from "../server/usage.ts";
 import type { Receipt } from "../shared/receipt.ts";
 
 test("a profile lookup can discover OpenCode Auto-accept before an agent exists", async () => {
@@ -208,16 +209,18 @@ test("a provider tool-grammar rejection advances the chain without echoing the d
 
   for (const hasFallback of [true, false]) {
     await t.test(hasFallback ? "continues the same turn" : "reports a concise error when exhausted", { timeout: 5000 }, async () => {
+      process.env.PASEO_HOME = join(home, String(hasFallback));
+      const usageStore = createUsageStore();
       const headline = "Upstream error from Recursive: Failed to compile structural_tag grammar:";
       const dump = '   1 | start: <[150010]> "device-picker_list_devices"';
       const models = [
-        { id: "opencode/hy4-flash-free", label: "Hy4 Flash Free", failure: { error: "Rate limit exceeded" } },
-        { id: "openrouter/openrouter/free", label: "Free Models Router", failure: hasFallback
+        { provider: "opencode", id: "opencode/hy4-flash-free", label: "Hy4 Flash Free", failure: { error: "Rate limit exceeded" } },
+        { provider: "openrouter", id: "openrouter/free", label: "Free Models Router", failure: hasFallback
           ? { error: `${headline} at 1(99197): initial lexer configuration (grammar) too big (limit for this grammar: 1000000)\n${dump}` }
           : { error: `${headline}\n${dump}`, diagnostic: "initial lexer configuration (grammar)\nis too large" } },
-        { id: "alt/free", label: "Another Free Model" },
+        { provider: "alt", id: "alt/free", label: "Another Free Model" },
       ];
-      const chain = (hasFallback ? models : models.slice(0, 2)).map(({ id }) => `opencode/${id}`);
+      const chain = (hasFallback ? models : models.slice(0, 2)).map(({ provider, id }) => `${provider}/${id}`);
       const ownerId = `owner-${hasFallback}`;
       const attempts: string[] = [];
       const receipts: Receipt[] = [];
@@ -228,12 +231,20 @@ test("a provider tool-grammar rejection advances the chain without echoing the d
         setMetadata: async (metadata: unknown) => { changes.push(metadata); },
         timeline: { append: async ({ data }: { data: Receipt }) => { receipts.push(data); } },
       };
-      type BackendEvent = { event: { type: "turn_started" | "turn_completed" | "turn_failed"; turnId: string; error?: string; diagnostic?: string } };
+      type BackendEvent = { event: {
+        type: "turn_started" | "turn_completed" | "turn_failed"; turnId: string;
+        error?: string; diagnostic?: string;
+        usage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number };
+      } };
       const paseo = {
         agents: { ref: (id: string) => id === ownerId ? owner : { refresh: async () => null } },
-        config: { get: async () => ({ config: {} }) },
+        config: { get: async () => ({ config: { providers: {
+          openrouter: { extends: "opencode" }, alt: { extends: "opencode" },
+        } } }) },
         providers: {
-          listModels: async () => ({ models }),
+          listModels: async (provider: string) => ({
+            models: models.filter((model) => model.provider === provider).map(({ id, label }) => ({ id, label })),
+          }),
           listModes: async () => ({ modes: [{ id: "build", label: "Build" }] }),
           listControls: async () => ({ options: { auto_accept: false } }),
           snapshot: async () => ({ entries: [] }),
@@ -242,7 +253,7 @@ test("a provider tool-grammar rejection advances the chain without echoing the d
           agents: { create: async ({ agentId, config }: { agentId: string; config: { provider: string } }) => {
             const { provider } = config;
             attempts.push(provider);
-            const failure = models.find(({ id }) => `opencode/${id}` === provider)?.failure;
+            const failure = models.find((entry) => `${entry.provider}/${entry.id}` === provider)?.failure;
             let listener: (value: BackendEvent) => void;
             return {
               id: agentId,
@@ -255,7 +266,8 @@ test("a provider tool-grammar rejection advances the chain without echoing the d
                 listener({ event: { type: "turn_started", turnId: agentId } });
                 listener({ event: failure
                   ? { type: "turn_failed", turnId: agentId, ...failure }
-                  : { type: "turn_completed", turnId: agentId } });
+                  : { type: "turn_completed", turnId: agentId,
+                    usage: { inputTokens: 12, cachedInputTokens: 4, outputTokens: 7 } } });
               },
             };
           } },
@@ -263,6 +275,7 @@ test("a provider tool-grammar rejection advances the chain without echoing the d
       } as unknown as PaseoApi;
       const provider = createProvider({
         getPaseo: () => paseo,
+        usage: usageStore,
         getPresets: async () => [{
           id: "cheapskate", name: "Cheapskate", chain: chain.join("\n"), billing: "free-only",
           costs: Object.fromEntries(chain.map((selection) => [selection, "free"])),
@@ -303,18 +316,156 @@ test("a provider tool-grammar rejection advances the chain without echoing the d
           assert.equal(outcome.error, undefined);
           assert.deepEqual(changes.at(-1), {
             "cheapskate.activeRoute": {
-              selection: "opencode/alt/free", label: "opencode · Another Free Model",
-              change: { reason: "tool-grammar", from: "opencode · Free Models Router" },
+              selection: "alt/alt/free", label: "alt · Another Free Model",
+              change: { reason: "tool-grammar", from: "openrouter · Free Models Router" },
             },
           });
           assert.ok(events.some((event) => event.type === "timeline.item" && event.item.type === "notification"
             && event.item.message.includes("Free Models Router exceeded its tool-call grammar limit")));
+          assert.deepEqual(usageStore.summary().rows, [{
+            providerId: "alt", modelId: "alt/free",
+            inputTokens: 12, cachedInputTokens: 4, outputTokens: 7,
+            completedTurns: 1, incompleteTurns: 0,
+          }], "only the answering provider/model records usage");
+          const reopened = createUsageStore();
+          assert.deepEqual(reopened.summary().rows, usageStore.summary().rows, "usage is host-local and persists");
+          reopened.close();
         } else {
           assert.match(outcome.error?.message ?? "", /Free Models Router exceeded its tool-call grammar limit/);
+          assert.deepEqual(usageStore.summary().rows, [], "a turn with no answer records no usage");
         }
       } finally {
         await connection.close();
+        usageStore.close();
       }
     });
+  }
+});
+
+test("usage tallies explicit turns, misses stale snapshots, and survives a canceled refresh", { timeout: 10000 }, async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "cheapskate-usage-integration-"));
+  const previousHome = process.env.PASEO_HOME;
+  process.env.PASEO_HOME = home;
+  t.after(async () => {
+    if (previousHome === undefined) delete process.env.PASEO_HOME;
+    else process.env.PASEO_HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
+  });
+
+  const usageStore = createUsageStore();
+  const ownerId = "usage-integration-owner";
+  const usage = { inputTokens: 20, cachedInputTokens: 3, outputTokens: 9 };
+  const completions: { usage?: typeof usage; blockRefresh?: boolean }[] = [
+    { usage }, { usage }, {}, { usage, blockRefresh: true },
+  ];
+  const refreshStarted = Promise.withResolvers<void>();
+  const releaseRefresh = Promise.withResolvers<void>();
+  let turn = 0;
+  let gateRefresh = false;
+  const owner = {
+    agent: { workspaceId: "workspace", metadata: {} },
+    refresh: async () => owner,
+    setMetadata: async () => {},
+    timeline: { append: async () => {} },
+  };
+  type BackendEvent = { event: {
+    type: "turn_started" | "turn_completed"; turnId: string;
+    usage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number };
+  } };
+  let listener: (value: BackendEvent) => void;
+  const backend = {
+    lastUsage: usage,
+    refresh: async () => {
+      if (gateRefresh) {
+        gateRefresh = false;
+        refreshStarted.resolve();
+        await releaseRefresh.promise;
+      }
+      return {};
+    },
+    archive: async () => {},
+    timeline: { subscribe: (callback: typeof listener) => {
+      listener = callback;
+      return Object.assign(() => {}, { ready: Promise.resolve() });
+    } },
+    send: async () => {
+      const index = turn++;
+      const turnId = `backend-${index}`;
+      const report = completions[index];
+      listener({ event: { type: "turn_started", turnId } });
+      listener({ event: { type: "turn_completed", turnId, ...(report.usage ? { usage: report.usage } : {}) } });
+      if (report.blockRefresh) gateRefresh = true;
+    },
+  };
+  const paseo = {
+    agents: { ref: (id: string) => id === ownerId ? owner : { ...backend, id } },
+    config: { get: async () => ({ config: {} }) },
+    providers: {
+      listModels: async () => ({ models: [{ id: "hy4", label: "Hy4" }] }),
+      listModes: async () => ({ modes: [{ id: "build", label: "Build" }] }),
+      listControls: async () => ({ options: {} }),
+      snapshot: async () => ({ entries: [] }),
+    },
+    workspaces: { ref: () => ({ agents: { create: async ({ agentId }: { agentId: string }) => ({
+      ...backend, id: agentId,
+    }) } }) },
+  } as unknown as PaseoApi;
+  const provider = createProvider({
+    getPaseo: () => paseo,
+    usage: usageStore,
+    getPresets: async () => [{
+      id: "cheapskate", name: "Cheapskate", chain: "opencode/hy4", billing: "free-only",
+      costs: { "opencode/hy4": "free" }, overload: false, autoReturn: false,
+    }],
+  });
+  const connection = await provider.connect({ versions: [PROVIDER_PROTOCOL_VERSION], capabilities: [] });
+  let pending = Promise.withResolvers<string>();
+  connection.onEvent((event) => {
+    if (event.type === "session.turn" && event.state !== "started") pending.resolve(event.state);
+  });
+  function prompt(messageId: string) {
+    pending = Promise.withResolvers<string>();
+    return connection.send({
+      type: "session.prompt", sessionId: "session",
+      prompt: {
+        clientMessageId: messageId, delivery: "auto",
+        input: { type: "message", content: [{ type: "text", text: messageId }] },
+      },
+    }).then(() => pending.promise);
+  }
+  try {
+    await connection.send({
+      type: "session.open", requestId: "open", sessionId: "session", history: "skip",
+      config: {
+        cwd: home, env: { [ownerEnvKey]: ownerId }, mcpServers: {}, model: "cheapskate",
+        mode: "build", persist: true, settings: {}, providerOptions: {},
+      },
+    });
+    for (const messageId of ["one", "two", "three"]) {
+      assert.equal(await prompt(messageId), "completed");
+    }
+    assert.deepEqual(usageStore.summary().rows, [{
+      providerId: "opencode", modelId: "hy4",
+      inputTokens: 40, cachedInputTokens: 6, outputTokens: 18,
+      completedTurns: 3, incompleteTurns: 1,
+    }], "explicit usage is attributed each turn while an unchanged snapshot is missing");
+
+    const fourth = prompt("four");
+    await refreshStarted.promise;
+    const tallied = [{
+      providerId: "opencode", modelId: "hy4",
+      inputTokens: 60, cachedInputTokens: 9, outputTokens: 27,
+      completedTurns: 4, incompleteTurns: 1,
+    }];
+    assert.deepEqual(usageStore.summary().rows, tallied, "the completed backend is tallied before its refresh settles");
+    const interrupted = connection.send({ type: "session.interrupt", requestId: "interrupt", sessionId: "session" });
+    releaseRefresh.resolve();
+    await interrupted;
+    assert.equal(await fourth, "canceled");
+    assert.deepEqual(usageStore.summary().rows, tallied, "a canceled parent does not drop or duplicate the backend tally");
+  } finally {
+    releaseRefresh.resolve();
+    await connection.close();
+    usageStore.close();
   }
 });
