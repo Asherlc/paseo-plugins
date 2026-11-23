@@ -6,9 +6,12 @@ import { checkChain } from "./shared/chain-check";
 import { inspectChain } from "./server/chain-check";
 import { readControls } from "./server/controls";
 import { createCheckpoint } from "./server/checkpoint";
+import { createUsageStore } from "./server/usage";
+import { usageSummary } from "./shared/usage";
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(preferences);
+  const usage = createUsageStore();
   let paseo: PluginHandlerContext["paseo"] | undefined;
   const unhookCreate = server.addHook("agent.create.before", async ({ request }, context) => {
     if (request.config.provider === providerId) paseo = context.paseo;
@@ -25,11 +28,12 @@ export default function contribute(server: PluginServerContext) {
     return listPresets(state.values);
   }
 
-  server.registerProvider(createProvider({ getPresets, getPaseo: () => paseo }));
+  server.registerProvider(createProvider({ getPresets, getPaseo: () => paseo, usage }));
   const unsubscribe = settings.subscribe(async () => {
     await paseo?.providers.refresh({ providers: [providerId] }).catch(() => {});
   });
   server.handle(checkChain, ({ chain }, context) => inspectChain(context.paseo, parseChain(chain)));
+  server.handle(usageSummary, () => usage.summary());
   server.handle(prepareDraft, async ({ model = defaultModel.id }, context) => {
     paseo = context.paseo;
     const preset = (await getPresets()).find(({ id }) => id === model);
@@ -58,5 +62,6 @@ export default function contribute(server: PluginServerContext) {
     unhook();
     unhookArchive();
     unsubscribe();
+    usage.close();
   };
 }

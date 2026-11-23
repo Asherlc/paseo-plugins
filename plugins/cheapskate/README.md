@@ -46,6 +46,12 @@ When Cheapskate starts a new backend mid-conversation, it passes along the lates
 
 Cheapskate saves up to 300 recent timeline items and the backing agent ID in `plugin-data/cheapskate` under the daemon's Paseo home. Chat excerpts can contain sensitive information. Configure only backends that may receive that context.
 
+## Usage totals
+
+Use **Settings → Plugins → Cheapskate → View usage** for all-time token totals on the current host. Rows group by provider ID and canonical model ID. Each row shows input, cached input, and output sums with completed turn and missing token counts. A dash marks a field that was never reported. Skipped and failed attempts are not counted.
+
+Totals cover new turns from when usage tracking began. Earlier turns are not included. The data lives in `plugin-data/cheapskate/usage.sqlite` under the daemon's Paseo home, separate from routing settings, chat data, and archives. Each host keeps its own totals. Use **Refresh** in the dialog to reload.
+
 ## Development
 
 ```sh

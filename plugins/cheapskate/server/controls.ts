@@ -10,6 +10,7 @@ export type Options = NonNullable<ProviderConfigState["providerOptions"]>;
 type ModeCatalog = { id: string; family: string; modes: readonly ProviderMode[] };
 export type BackendControls = ModeCatalog & {
   selection: string;
+  modelId: string;
   label: string;
   selectable: boolean;
   defaultMode?: string;
@@ -125,7 +126,7 @@ export async function readControls(
   const thinking = (model.thinkingOptions ?? []).map(({ id, label, description, isDefault }) =>
     ({ id, label, description, isDefault }));
   return {
-    id, family, selection, label: `${provider?.label ?? id} · ${model.label}`,
+    id, family, selection, modelId: model.id, label: `${provider?.label ?? id} · ${model.label}`,
     selectable: model.isSelectable !== false, modes: modes ?? [],
     defaultMode: provider?.defaultModeId
       ?? (family === "opencode" && modes?.some(({ id }) => id === "build") ? "build" : undefined),

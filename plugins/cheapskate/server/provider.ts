@@ -20,6 +20,7 @@ import { receiptKind, receiptSchema, type Receipt, type RouteStep } from "../sha
 import { parseMessage, runBackend, type PaseoApi } from "./backend.ts";
 import { createCheckpoint, type Checkpoint } from "./checkpoint.ts";
 import { closestThinking, readControls, routePermissions, type BackendControls, type Options } from "./controls.ts";
+import type { UsageStore } from "./usage.ts";
 import { canFallback, handoffPrompt, providerResetAt, startingBackend } from "./routing.ts";
 
 export const ownerEnvKey = "CHEAPSKATE_OWNER_AGENT_ID";
@@ -70,6 +71,7 @@ const historyLimit = 300;
 type Dependencies = {
   getPresets(): Promise<Preset[]>;
   getPaseo(): PaseoApi | undefined;
+  usage?: UsageStore;
 };
 
 async function profileConfig(config: ProviderSessionConfig, dependencies: Dependencies) {
@@ -734,7 +736,18 @@ class Session {
             }
             step(turn, backend.label, "answered");
             turn.receipt.answer = backend.label.slice(0, 240);
-            turn.receipt.usage = outcome.usage ?? snapshotUsage;
+            const answeredUsage = outcome.usage ?? snapshotUsage;
+            turn.receipt.usage = answeredUsage;
+            if (this.dependencies.usage) {
+              try {
+                this.dependencies.usage.record({
+                  providerId: backend.id, modelId: backend.modelId, usage: answeredUsage,
+                });
+              } catch (error) {
+                // Usage is observability only: never disturb routing, receipts, or the session.
+                console.warn("cheapskate: could not record token usage", error);
+              }
+            }
             return "completed";
           }
         }
