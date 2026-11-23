@@ -8,6 +8,7 @@ import test from "node:test";
 import { PROVIDER_PROTOCOL_VERSION, type ProviderEvent } from "@getpaseo/plugin/server/provider";
 import type { PaseoApi } from "../server/backend.ts";
 import { createProvider, ownerEnvKey } from "../server/provider.ts";
+import type { Receipt } from "../shared/receipt.ts";
 
 test("a profile lookup can discover OpenCode Auto-accept before an agent exists", async () => {
   const provider = createProvider({
@@ -190,6 +191,129 @@ test("a turn recovers from a timed-out workspace OpenCode catalog", async (t) =>
             syncBuiltinESMExports();
           }
         }
+      }
+    });
+  }
+});
+
+test("a provider tool-grammar rejection advances the chain without echoing the dump", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "cheapskate-tool-grammar-"));
+  const previousHome = process.env.PASEO_HOME;
+  process.env.PASEO_HOME = home;
+  t.after(async () => {
+    if (previousHome === undefined) delete process.env.PASEO_HOME;
+    else process.env.PASEO_HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
+  });
+
+  for (const hasFallback of [true, false]) {
+    await t.test(hasFallback ? "continues the same turn" : "reports a concise error when exhausted", { timeout: 5000 }, async () => {
+      const headline = "Upstream error from Recursive: Failed to compile structural_tag grammar:";
+      const dump = '   1 | start: <[150010]> "device-picker_list_devices"';
+      const models = [
+        { id: "opencode/hy4-flash-free", label: "Hy4 Flash Free", failure: { error: "Rate limit exceeded" } },
+        { id: "openrouter/openrouter/free", label: "Free Models Router", failure: hasFallback
+          ? { error: `${headline} at 1(99197): initial lexer configuration (grammar) too big (limit for this grammar: 1000000)\n${dump}` }
+          : { error: `${headline}\n${dump}`, diagnostic: "initial lexer configuration (grammar)\nis too large" } },
+        { id: "alt/free", label: "Another Free Model" },
+      ];
+      const chain = (hasFallback ? models : models.slice(0, 2)).map(({ id }) => `opencode/${id}`);
+      const ownerId = `owner-${hasFallback}`;
+      const attempts: string[] = [];
+      const receipts: Receipt[] = [];
+      const changes: unknown[] = [];
+      const owner = {
+        agent: { workspaceId: "workspace", metadata: {} },
+        refresh: async () => owner,
+        setMetadata: async (metadata: unknown) => { changes.push(metadata); },
+        timeline: { append: async ({ data }: { data: Receipt }) => { receipts.push(data); } },
+      };
+      type BackendEvent = { event: { type: "turn_started" | "turn_completed" | "turn_failed"; turnId: string; error?: string; diagnostic?: string } };
+      const paseo = {
+        agents: { ref: (id: string) => id === ownerId ? owner : { refresh: async () => null } },
+        config: { get: async () => ({ config: {} }) },
+        providers: {
+          listModels: async () => ({ models }),
+          listModes: async () => ({ modes: [{ id: "build", label: "Build" }] }),
+          listControls: async () => ({ options: { auto_accept: false } }),
+          snapshot: async () => ({ entries: [] }),
+        },
+        workspaces: { ref: () => ({
+          agents: { create: async ({ agentId, config }: { agentId: string; config: { provider: string } }) => {
+            const { provider } = config;
+            attempts.push(provider);
+            const failure = models.find(({ id }) => `opencode/${id}` === provider)?.failure;
+            let listener: (value: BackendEvent) => void;
+            return {
+              id: agentId,
+              refresh: async () => null,
+              timeline: { subscribe: (callback: typeof listener) => {
+                listener = callback;
+                return Object.assign(() => {}, { ready: Promise.resolve() });
+              } },
+              send: async () => {
+                listener({ event: { type: "turn_started", turnId: agentId } });
+                listener({ event: failure
+                  ? { type: "turn_failed", turnId: agentId, ...failure }
+                  : { type: "turn_completed", turnId: agentId } });
+              },
+            };
+          } },
+        }) },
+      } as unknown as PaseoApi;
+      const provider = createProvider({
+        getPaseo: () => paseo,
+        getPresets: async () => [{
+          id: "cheapskate", name: "Cheapskate", chain: chain.join("\n"), billing: "free-only",
+          costs: Object.fromEntries(chain.map((selection) => [selection, "free"])),
+          overload: false, autoReturn: false,
+        }],
+      });
+      const connection = await provider.connect({ versions: [PROVIDER_PROTOCOL_VERSION], capabilities: [] });
+      const events: ProviderEvent[] = [];
+      const finished = Promise.withResolvers<Extract<ProviderEvent, { type: "session.turn" }>>();
+      connection.onEvent((event) => {
+        events.push(event);
+        if (event.type === "session.turn" && event.state !== "started") finished.resolve(event);
+      });
+
+      try {
+        await connection.send({
+          type: "session.open", requestId: "open", sessionId: "session", history: "skip",
+          config: {
+            cwd: home, env: { [ownerEnvKey]: ownerId }, mcpServers: {}, model: "cheapskate",
+            mode: "build", persist: true, settings: {}, providerOptions: { auto_accept: true },
+          },
+        });
+        await connection.send({
+          type: "session.prompt", sessionId: "session",
+          prompt: {
+            clientMessageId: "message", delivery: "auto",
+            input: { type: "message", content: [{ type: "text", text: "Hello" }] },
+          },
+        });
+
+        const outcome = await finished.promise;
+        assert.equal(outcome.state, hasFallback ? "completed" : "failed");
+        assert.deepEqual(attempts, chain);
+        assert.equal(JSON.stringify(events).includes("device-picker_list_devices"), false, "tool grammar leaked into provider events");
+        assert.deepEqual(receipts[0]?.steps.map(({ result }) => result),
+          hasFallback ? ["limit", "tool-grammar", "answered"] : ["limit", "tool-grammar"]);
+        if (hasFallback) {
+          assert.equal(outcome.error, undefined);
+          assert.deepEqual(changes.at(-1), {
+            "cheapskate.activeRoute": {
+              selection: "opencode/alt/free", label: "opencode · Another Free Model",
+              change: { reason: "tool-grammar", from: "opencode · Free Models Router" },
+            },
+          });
+          assert.ok(events.some((event) => event.type === "timeline.item" && event.item.type === "notification"
+            && event.item.message.includes("Free Models Router exceeded its tool-call grammar limit")));
+        } else {
+          assert.match(outcome.error?.message ?? "", /Free Models Router exceeded its tool-call grammar limit/);
+        }
+      } finally {
+        await connection.close();
       }
     });
   }

@@ -11,7 +11,7 @@ export const activeRoute = z.object({
   selection: z.string(),
   label: z.string(),
   change: z.object({
-    reason: z.enum(["limit", "unavailable", "permissions", "requested", "removed", "recovered", "chain", "billing"]),
+    reason: z.enum(["limit", "tool-grammar", "unavailable", "permissions", "requested", "removed", "recovered", "chain", "billing"]),
     from: z.string(),
   }).optional(),
 });

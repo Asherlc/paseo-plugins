@@ -7,7 +7,7 @@ export const receiptSchema = z.object({
   answer: z.string().optional(),
   steps: z.array(z.object({
     label: z.string(),
-    result: z.enum(["answered", "limit", "failed", "canceled", "unavailable", "permissions", "billing", "declined", "cooldown", "sticky"]),
+    result: z.enum(["answered", "limit", "tool-grammar", "failed", "canceled", "unavailable", "permissions", "billing", "declined", "cooldown", "sticky"]),
     resetAt: z.number().optional(),
   })),
   omitted: z.number(),

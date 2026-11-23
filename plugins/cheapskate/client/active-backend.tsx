@@ -7,6 +7,7 @@ import { findPreset, parseChain, preferences, primarySelection, providerId } fro
 
 const describeChange: Record<RouteChange["reason"], (from: string) => string> = {
   limit: (from) => `${from} hit a provider limit.`,
+  "tool-grammar": (from) => `${from} exceeded its tool-call grammar limit.`,
   unavailable: (from) => `Paseo could not read the controls for ${from}.`,
   permissions: (from) => `${from} could not preserve the selected permissions.`,
   requested: (from) => `You asked to try the first choice again after using ${from}.`,
