@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - 'plugins/cheapskate/**'
+      - 'shared/**'
       - '.github/workflows/release.yml'
   workflow_dispatch:
 
@@ -59,6 +60,18 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # Only release when Cheapskate or shared contents changed since the last
+          # reachable release tag. No tag means this is the first release (bootstrap).
+          base_tag=$(git tag --merged HEAD --sort=-version:refname --list 'v[0-9]*' | sed -n '1p')
+          if [ -n "$base_tag" ]; then
+            changed=$(git diff --name-only "$base_tag" HEAD -- plugins/cheapskate shared)
+            if [ -z "$changed" ]; then
+              echo "No Cheapskate or shared changes since $base_tag. Skipping release."
+              exit 0
+            fi
+          fi
+
           tag=$(npm version patch --prefix plugins/cheapskate --no-git-tag-version --ignore-scripts)
 
           if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
@@ -84,6 +97,7 @@ jobs:
 
   marketplace:
     needs: release
+    if: needs.release.outputs.tag != ''
     runs-on: ubuntu-latest
     steps:
       - name: Submit the released revision to the Paseo marketplace

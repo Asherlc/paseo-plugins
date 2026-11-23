@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - 'plugins/devices/**'
+      - 'shared/**'
       - '.github/workflows/devices.yml'
   push:
     branches: [main]
     tags: ['devices-v*']
     paths:
       - 'plugins/devices/**'
+      - 'shared/**'
       - '.github/workflows/devices.yml'
   workflow_dispatch:
 
@@ -40,9 +42,12 @@ jobs:
     needs: check-devices
     runs-on: ubuntu-latest
     concurrency:
-      group: devices-marketplace-${{ github.sha }}
+      group: devices-marketplace
       cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Submit this Devices revision to the Paseo marketplace
         env:
           GH_TOKEN: ${{ secrets.MARKETPLACE_TOKEN }}
@@ -60,6 +65,29 @@ jobs:
           if [ -n "$existing" ]; then
             echo "Already submitted: $existing"
             exit 0
+          fi
+
+          # Compare against the most recently submitted Devices SHA for this repo.
+          # A missing prior submission bootstraps; an empty diff skips.
+          # shellcheck disable=SC2016 # $sha is jq syntax inside single quotes.
+          submitted=$(gh issue list --state all \
+            --search "sort:created-desc Devices marketplace update in:title" \
+            --json title,body \
+            --jq '
+              first(
+                .[]
+                | . as $issue
+                | ($issue.title | capture("^Devices (?<s>[0-9a-f]{40}) marketplace update$").s) as $sha
+                | select(($issue.body | split("\n") | index("https://github.com/" + env.GITHUB_REPOSITORY + "/tree/" + $sha + "/plugins/devices")) != null)
+                | $sha
+              ) // empty
+            ')
+          if [ -n "$submitted" ]; then
+            changed=$(git diff --name-only "$submitted" HEAD -- plugins/devices shared)
+            if [ -z "$changed" ]; then
+              echo "No Devices or shared changes since $submitted. Skipping marketplace submission."
+              exit 0
+            fi
           fi
 
           cat > "$RUNNER_TEMP/submission.md" <<EOF
