@@ -1,0 +1,35 @@
+{
+  "name": "paseo-plugin-markdown-annotations",
+  "version": "0.1.0",
+  "description": "Quote and comment on Markdown files in a Paseo agent draft.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Asherlc/paseo-plugins.git",
+    "directory": "plugins/markdown-annotations"
+  },
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "files": [
+    "paseo-plugin.json",
+    "OVERVIEW.md",
+    "README.md",
+    "index.client.tsx",
+    "client/*.ts",
+    "client/*.tsx"
+  ],
+  "devDependencies": {
+    "@getpaseo/plugin": "0.16.2",
+    "@tanstack/react-query": "^5.90.11",
+    "@types/react": "~19.2.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  },
+  "type": "module"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "markdown-annotations",
+  "name": "Markdown annotations",
+  "description": "Quote and comment on Markdown files in a Paseo agent draft.",
+  "requirements": {
+    "paseo": ">=0.16.2"
+  }
+}
