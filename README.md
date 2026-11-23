@@ -26,6 +26,12 @@ Run Storybook per workspace, select a story for review, and bring Canvas Comment
 - Install from Git with `paseo plugin install git:Asherlc/paseo-plugins:plugins/storybook`.
 - [Storybook documentation](plugins/storybook/README.md)
 
+### Markdown annotations
+
+Select a passage in a Markdown file and add the quote, line range, and your comment to an agent's draft.
+
+- [Markdown annotations documentation](plugins/markdown-annotations/README.md)
+
 ## Development
 
 Packages are installed and tested independently, each with its own lockfile and checks. Cheapskate releases and Devices marketplace submissions require changes in their own package directory or the repository-level `shared/` directory.
@@ -48,4 +54,4 @@ npm run typecheck
 npm test
 ```
 
-CI checks each package independently. Cheapskate's workflow also publishes its patch releases. [Cheapskate workflow](.github/workflows/release.yml) · [Devices workflow](.github/workflows/devices.yml) · [Storybook workflow](.github/workflows/storybook.yml)
+Cheapskate, Devices, and Storybook have independent CI workflows. Cheapskate's workflow also publishes its patch releases. [Cheapskate workflow](.github/workflows/release.yml) · [Devices workflow](.github/workflows/devices.yml) · [Storybook workflow](.github/workflows/storybook.yml)
