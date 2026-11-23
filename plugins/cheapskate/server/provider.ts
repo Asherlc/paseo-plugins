@@ -13,6 +13,7 @@ import {
   type ProviderRegistration,
   type ProviderSessionConfig,
   type ProviderTimelineItem,
+  type ProviderUsage,
 } from "@getpaseo/plugin/server/provider";
 import { billingDecision, defaultModel, parseChain, primarySelection, providerId, type Preset } from "../shared/settings.ts";
 import { activeRoute, activeRouteKey, handledPrimaryKey, primaryRequestKey, quotaResetsKey, type RouteChange } from "../shared/route-status.ts";
@@ -480,6 +481,17 @@ class Session {
     await this.save();
   }
 
+  private recordUsage(backend: BackendControls, usage?: ProviderUsage) {
+    const store = this.dependencies.usage;
+    if (!store) return;
+    try {
+      store.record({ providerId: backend.id, modelId: backend.modelId, usage });
+    } catch (error) {
+      // Usage is observability only: never disturb routing, receipts, or the session.
+      console.warn("cheapskate: could not record token usage", error);
+    }
+  }
+
   private async run(turn: Turn, message: ReturnType<typeof parseMessage>): Promise<"completed" | "canceled"> {
     const signal = turn.stop.signal;
     const presets = await this.dependencies.getPresets();
@@ -711,8 +723,9 @@ class Session {
           agent, sessionId: this.id, turnId: turn.id, attemptId, message: prompt, signal,
           emit: (event) => event.type === "timeline.item" ? this.record(event.item) : this.emit(event),
         });
-        if (outcome.state === "completed" && !signal.aborted) {
-          const updated = await agent.refresh().catch(() => null);
+        if (outcome.state === "completed") {
+          if (outcome.usage) this.recordUsage(backend, outcome.usage);
+          const updated = signal.aborted ? null : await agent.refresh().catch(() => null);
           if (updated) {
             const liveMode = agent.runtimeInfo?.modeId;
             const liveThinking = agent.runtimeInfo?.thinkingOptionId;
@@ -723,31 +736,21 @@ class Session {
             this.selected = requested;
             this.publishConfig();
           }
+          const latestUsage = updated ? agent.lastUsage ?? undefined : undefined;
+          // Paseo keeps the last snapshot even when the provider is silent on a later turn.
+          // Only attribute snapshot usage when a fresh worker or a changed snapshot identifies it.
+          const snapshotUsage = !existing || (worker.lastUsage !== undefined && !isDeepStrictEqual(worker.lastUsage, latestUsage ?? null))
+            ? latestUsage : undefined;
+          if (!outcome.usage) this.recordUsage(backend, signal.aborted ? undefined : snapshotUsage);
           if (!signal.aborted) {
             worker.inFlight = false;
-            const latestUsage = updated ? agent.lastUsage ?? undefined : undefined;
-            // Paseo keeps the last snapshot even when the provider is silent on a later turn.
-            // Only attribute snapshot usage when a fresh worker or a changed snapshot identifies it.
-            const snapshotUsage = !existing || (worker.lastUsage !== undefined && !isDeepStrictEqual(worker.lastUsage, latestUsage ?? null))
-              ? latestUsage : undefined;
             if (updated) worker.lastUsage = latestUsage ?? null;
             if (!outcome.usage && snapshotUsage) {
               this.emit({ type: "session.usage", sessionId: this.id, turnId: turn.id, usage: snapshotUsage });
             }
             step(turn, backend.label, "answered");
             turn.receipt.answer = backend.label.slice(0, 240);
-            const answeredUsage = outcome.usage ?? snapshotUsage;
-            turn.receipt.usage = answeredUsage;
-            if (this.dependencies.usage) {
-              try {
-                this.dependencies.usage.record({
-                  providerId: backend.id, modelId: backend.modelId, usage: answeredUsage,
-                });
-              } catch (error) {
-                // Usage is observability only: never disturb routing, receipts, or the session.
-                console.warn("cheapskate: could not record token usage", error);
-              }
-            }
+            turn.receipt.usage = outcome.usage ?? snapshotUsage;
             return "completed";
           }
         }

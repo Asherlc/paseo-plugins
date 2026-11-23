@@ -341,3 +341,131 @@ test("a provider tool-grammar rejection advances the chain without echoing the d
     });
   }
 });
+
+test("usage tallies explicit turns, misses stale snapshots, and survives a canceled refresh", { timeout: 10000 }, async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "cheapskate-usage-integration-"));
+  const previousHome = process.env.PASEO_HOME;
+  process.env.PASEO_HOME = home;
+  t.after(async () => {
+    if (previousHome === undefined) delete process.env.PASEO_HOME;
+    else process.env.PASEO_HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
+  });
+
+  const usageStore = createUsageStore();
+  const ownerId = "usage-integration-owner";
+  const usage = { inputTokens: 20, cachedInputTokens: 3, outputTokens: 9 };
+  const completions: { usage?: typeof usage; blockRefresh?: boolean }[] = [
+    { usage }, { usage }, {}, { usage, blockRefresh: true },
+  ];
+  const refreshStarted = Promise.withResolvers<void>();
+  const releaseRefresh = Promise.withResolvers<void>();
+  let turn = 0;
+  let gateRefresh = false;
+  const owner = {
+    agent: { workspaceId: "workspace", metadata: {} },
+    refresh: async () => owner,
+    setMetadata: async () => {},
+    timeline: { append: async () => {} },
+  };
+  type BackendEvent = { event: {
+    type: "turn_started" | "turn_completed"; turnId: string;
+    usage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number };
+  } };
+  let listener: (value: BackendEvent) => void;
+  const backend = {
+    lastUsage: usage,
+    refresh: async () => {
+      if (gateRefresh) {
+        gateRefresh = false;
+        refreshStarted.resolve();
+        await releaseRefresh.promise;
+      }
+      return {};
+    },
+    archive: async () => {},
+    timeline: { subscribe: (callback: typeof listener) => {
+      listener = callback;
+      return Object.assign(() => {}, { ready: Promise.resolve() });
+    } },
+    send: async () => {
+      const index = turn++;
+      const turnId = `backend-${index}`;
+      const report = completions[index];
+      listener({ event: { type: "turn_started", turnId } });
+      listener({ event: { type: "turn_completed", turnId, ...(report.usage ? { usage: report.usage } : {}) } });
+      if (report.blockRefresh) gateRefresh = true;
+    },
+  };
+  const paseo = {
+    agents: { ref: (id: string) => id === ownerId ? owner : { ...backend, id } },
+    config: { get: async () => ({ config: {} }) },
+    providers: {
+      listModels: async () => ({ models: [{ id: "hy4", label: "Hy4" }] }),
+      listModes: async () => ({ modes: [{ id: "build", label: "Build" }] }),
+      listControls: async () => ({ options: {} }),
+      snapshot: async () => ({ entries: [] }),
+    },
+    workspaces: { ref: () => ({ agents: { create: async ({ agentId }: { agentId: string }) => ({
+      ...backend, id: agentId,
+    }) } }) },
+  } as unknown as PaseoApi;
+  const provider = createProvider({
+    getPaseo: () => paseo,
+    usage: usageStore,
+    getPresets: async () => [{
+      id: "cheapskate", name: "Cheapskate", chain: "opencode/hy4", billing: "free-only",
+      costs: { "opencode/hy4": "free" }, overload: false, autoReturn: false,
+    }],
+  });
+  const connection = await provider.connect({ versions: [PROVIDER_PROTOCOL_VERSION], capabilities: [] });
+  let pending = Promise.withResolvers<string>();
+  connection.onEvent((event) => {
+    if (event.type === "session.turn" && event.state !== "started") pending.resolve(event.state);
+  });
+  function prompt(messageId: string) {
+    pending = Promise.withResolvers<string>();
+    return connection.send({
+      type: "session.prompt", sessionId: "session",
+      prompt: {
+        clientMessageId: messageId, delivery: "auto",
+        input: { type: "message", content: [{ type: "text", text: messageId }] },
+      },
+    }).then(() => pending.promise);
+  }
+  try {
+    await connection.send({
+      type: "session.open", requestId: "open", sessionId: "session", history: "skip",
+      config: {
+        cwd: home, env: { [ownerEnvKey]: ownerId }, mcpServers: {}, model: "cheapskate",
+        mode: "build", persist: true, settings: {}, providerOptions: {},
+      },
+    });
+    for (const messageId of ["one", "two", "three"]) {
+      assert.equal(await prompt(messageId), "completed");
+    }
+    assert.deepEqual(usageStore.summary().rows, [{
+      providerId: "opencode", modelId: "hy4",
+      inputTokens: 40, cachedInputTokens: 6, outputTokens: 18,
+      completedTurns: 3, incompleteTurns: 1,
+    }], "explicit usage is attributed each turn while an unchanged snapshot is missing");
+
+    const fourth = prompt("four");
+    await refreshStarted.promise;
+    const tallied = [{
+      providerId: "opencode", modelId: "hy4",
+      inputTokens: 60, cachedInputTokens: 9, outputTokens: 27,
+      completedTurns: 4, incompleteTurns: 1,
+    }];
+    assert.deepEqual(usageStore.summary().rows, tallied, "the completed backend is tallied before its refresh settles");
+    const interrupted = connection.send({ type: "session.interrupt", requestId: "interrupt", sessionId: "session" });
+    releaseRefresh.resolve();
+    await interrupted;
+    assert.equal(await fourth, "canceled");
+    assert.deepEqual(usageStore.summary().rows, tallied, "a canceled parent does not drop or duplicate the backend tally");
+  } finally {
+    releaseRefresh.resolve();
+    await connection.close();
+    usageStore.close();
+  }
+});

@@ -34,7 +34,7 @@ export function Usage({ theme, close }: { theme: Theme; close(): void }) {
     <Modal title="Usage" open onOpenChange={(open) => { if (!open) close(); }}>
       <Modal.Content>
         <Text style={{ color: theme.colors.foregroundMuted }}>
-          Totals from completed Cheapskate turns on this host since usage tracking began.
+          Totals from completed backend turns on this host since usage tracking began.
         </Text>
         {!state.error && <SettingsAction label="Usage totals" actionLabel={state.loading ? "Refreshing…" : "Refresh"}
           disabled={state.loading} onPress={refresh} />}
