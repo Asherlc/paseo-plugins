@@ -1,4 +1,4 @@
-Cheapskate adds a model to Paseo's regular picker. The model runs on an ordered chain of models from your existing Paseo providers. If a backend hits a quota or rate limit, Cheapskate continues in the same chat and workspace using the next entry.
+Cheapskate adds a model to Paseo's regular picker. The model runs on an ordered chain of models from your existing Paseo providers. If a backend hits a quota, rate limit, or tool-call grammar limit, Cheapskate continues in the same chat and workspace using the next entry.
 
 ## Setup
 

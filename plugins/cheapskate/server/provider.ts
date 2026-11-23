@@ -748,7 +748,9 @@ class Session {
         step(turn, backend.label, "canceled");
         return "canceled";
       }
-      if (/failed to compile structural_tag grammar:[^\r\n]*initial lexer configuration \(grammar\) too big/i.test(failure.message)) {
+      const failureDetails = `${failure.message}\n${failure.diagnostic ?? ""}`;
+      if (/\bfailed\s+to\s+compile\s+structural_tag\s+grammar\b/i.test(failureDetails)
+        && /\binitial\s+lexer\s+configuration\s*\(grammar\)\s+(?:(?:is\s+)?too\s+(?:big|large)|exceeds?\s+(?:the\s+)?(?:size\s+)?limit)\b/i.test(failureDetails)) {
         const summary = `${backend.label} exceeded its tool-call grammar limit.`;
         step(turn, backend.label, "tool-grammar");
         change = { reason: "tool-grammar", from: backend.label };

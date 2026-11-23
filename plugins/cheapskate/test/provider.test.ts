@@ -206,17 +206,17 @@ test("a provider tool-grammar rejection advances the chain without echoing the d
     await rm(home, { recursive: true, force: true });
   });
 
-  const models = [
-    { id: "opencode/hy4-flash-free", label: "Hy4 Flash Free", error: "Rate limit exceeded" },
-    { id: "openrouter/openrouter/free", label: "Free Models Router", error: [
-      "Upstream error from Recursive: Failed to compile structural_tag grammar: at 1(99197): initial lexer configuration (grammar) too big (limit for this grammar: 1000000)",
-      '   1 | start: <[150010]> "device-picker_list_devices"',
-    ].join("\n") },
-    { id: "alt/free", label: "Another Free Model" },
-  ];
-
   for (const hasFallback of [true, false]) {
     await t.test(hasFallback ? "continues the same turn" : "reports a concise error when exhausted", { timeout: 5000 }, async () => {
+      const headline = "Upstream error from Recursive: Failed to compile structural_tag grammar:";
+      const dump = '   1 | start: <[150010]> "device-picker_list_devices"';
+      const models = [
+        { id: "opencode/hy4-flash-free", label: "Hy4 Flash Free", failure: { error: "Rate limit exceeded" } },
+        { id: "openrouter/openrouter/free", label: "Free Models Router", failure: hasFallback
+          ? { error: `${headline} at 1(99197): initial lexer configuration (grammar) too big (limit for this grammar: 1000000)\n${dump}` }
+          : { error: `${headline}\n${dump}`, diagnostic: "initial lexer configuration (grammar)\nis too large" } },
+        { id: "alt/free", label: "Another Free Model" },
+      ];
       const chain = (hasFallback ? models : models.slice(0, 2)).map(({ id }) => `opencode/${id}`);
       const ownerId = `owner-${hasFallback}`;
       const attempts: string[] = [];
@@ -228,7 +228,7 @@ test("a provider tool-grammar rejection advances the chain without echoing the d
         setMetadata: async (metadata: unknown) => { changes.push(metadata); },
         timeline: { append: async ({ data }: { data: Receipt }) => { receipts.push(data); } },
       };
-      type BackendEvent = { event: { type: "turn_started" | "turn_completed" | "turn_failed"; turnId: string; error?: string } };
+      type BackendEvent = { event: { type: "turn_started" | "turn_completed" | "turn_failed"; turnId: string; error?: string; diagnostic?: string } };
       const paseo = {
         agents: { ref: (id: string) => id === ownerId ? owner : { refresh: async () => null } },
         config: { get: async () => ({ config: {} }) },
@@ -242,7 +242,7 @@ test("a provider tool-grammar rejection advances the chain without echoing the d
           agents: { create: async ({ agentId, config }: { agentId: string; config: { provider: string } }) => {
             const { provider } = config;
             attempts.push(provider);
-            const error = models.find(({ id }) => `opencode/${id}` === provider)?.error;
+            const failure = models.find(({ id }) => `opencode/${id}` === provider)?.failure;
             let listener: (value: BackendEvent) => void;
             return {
               id: agentId,
@@ -253,8 +253,8 @@ test("a provider tool-grammar rejection advances the chain without echoing the d
               } },
               send: async () => {
                 listener({ event: { type: "turn_started", turnId: agentId } });
-                listener({ event: error
-                  ? { type: "turn_failed", turnId: agentId, error }
+                listener({ event: failure
+                  ? { type: "turn_failed", turnId: agentId, ...failure }
                   : { type: "turn_completed", turnId: agentId } });
               },
             };
