@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - 'plugins/storybook/**'
+      - 'shared/**'
       - '.github/workflows/storybook.yml'
   push:
     branches: [main]
     paths:
       - 'plugins/storybook/**'
+      - 'shared/**'
       - '.github/workflows/storybook.yml'
   workflow_dispatch:
 

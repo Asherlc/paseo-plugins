@@ -28,7 +28,7 @@ Run Storybook per workspace, select a story for review, and bring Canvas Comment
 
 ## Development
 
-Packages are installed and tested independently, each with its own lockfile and checks.
+Packages are installed and tested independently, each with its own lockfile and checks. Cheapskate releases and Devices marketplace submissions require changes in their own package directory or the repository-level `shared/` directory.
 
 For Cheapskate:
 
