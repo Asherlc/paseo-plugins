@@ -564,7 +564,7 @@ class Session {
     }
     if (oldWorker?.inFlight) await this.archiveWorker(paseo);
 
-    let failure: ProviderError | undefined;
+    let exhaustion: string | undefined;
     for (const [index, selection] of chain.entries()) {
       if (signal.aborted) return "canceled";
       const cost = preset.costs[selection];
@@ -644,6 +644,7 @@ class Session {
         return "canceled";
       }
 
+      let failure: ProviderError;
       try {
         // The daemon and its plugins supply the new backend's own identity and thread storage.
         const {
@@ -747,6 +748,19 @@ class Session {
         step(turn, backend.label, "canceled");
         return "canceled";
       }
+      if (/failed to compile structural_tag grammar:[^\r\n]*initial lexer configuration \(grammar\) too big/i.test(failure.message)) {
+        const summary = `${backend.label} exceeded its tool-call grammar limit.`;
+        step(turn, backend.label, "tool-grammar");
+        change = { reason: "tool-grammar", from: backend.label };
+        exhaustion = `No compatible backend remains. ${summary}`;
+        if (index + 1 < chain.length) {
+          this.record({
+            type: "notification", id: `fallback:${turn.id}:${attemptId}`, level: "warning",
+            message: `${summary} Looking for the next compatible backend.`,
+          });
+        }
+        continue;
+      }
       if (!canFallback(failure, overload)) {
         step(turn, backend.label, "failed");
         throw new Error(`${selection}: ${failure.message}`);
@@ -755,6 +769,7 @@ class Session {
       if (resetAt !== undefined) limits[selection] = { resetAt, label: backend.label.slice(0, 240) };
       step(turn, backend.label, "limit", resetAt);
       change = { reason: "limit", from: backend.label };
+      exhaustion = `No compatible backend remains after the provider limit: ${failure.message}`;
       if (index + 1 < chain.length) {
         this.record({
           type: "notification", id: `fallback:${turn.id}:${attemptId}`, level: "warning",
@@ -763,9 +778,7 @@ class Session {
       }
     }
     if (signal.aborted) return "canceled";
-    throw new Error(failure
-      ? `No compatible backend remains after the provider limit: ${failure.message}`
-      : "No configured backend can run this message. Open the routing receipt for details.");
+    throw new Error(exhaustion ?? "No configured backend can run this message. Open the routing receipt for details.");
   }
 }
 

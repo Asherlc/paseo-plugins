@@ -34,7 +34,7 @@ On failover, Cheapskate uses the nearest available thinking level and a known eq
 
 ## What happens when a model fails
 
-Cheapskate switches on quota and rate-limit failures. You can opt in to switching on provider overload. Ordinary errors stop the turn and surface in the chat. Each backend is tried once in a turn. A successful backend handles subsequent turns until it fails or is removed from the chain. Settings changes take effect on the next turn.
+Cheapskate switches on quota and rate-limit failures and when a backend rejects a request because its tool-call grammar is too large. You can opt in to switching on provider overload. Ordinary errors stop the turn and surface in the chat. Each backend is tried once in a turn. A successful backend handles subsequent turns until it fails or is removed from the chain. Settings changes take effect on the next turn.
 
 If a failure includes an explicit retry delay or time with a timezone, Cheapskate records it for that backend in the chat and shows it in the routing details. It skips that backend until the reported time. Turn on **Return after quota reset** to try an earlier eligible backend on the first new message after its known reset. Cheapskate makes no background probes. A manual retry also honors a reported wait.
 

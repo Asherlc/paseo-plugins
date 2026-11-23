@@ -7,6 +7,7 @@ import type { Receipt, RouteStep } from "../shared/receipt";
 const stepLabels: Record<RouteStep["result"], string> = {
   answered: "Answered",
   limit: "Hit provider limit",
+  "tool-grammar": "Exceeded tool-call grammar limit",
   failed: "Provider error",
   canceled: "Canceled",
   unavailable: "Backend controls unavailable",
