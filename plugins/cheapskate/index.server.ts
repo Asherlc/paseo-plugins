@@ -32,7 +32,7 @@ export default function contribute(server: PluginServerContext) {
   const unsubscribe = settings.subscribe(async () => {
     await paseo?.providers.refresh({ providers: [providerId] }).catch(() => {});
   });
-  server.handle(checkChain, ({ chain }, context) => inspectChain(context.paseo, parseChain(chain)));
+  server.handle(checkChain, ({ chain, source }, context) => inspectChain(context.paseo, parseChain(chain), source));
   server.handle(usageSummary, () => usage.summary());
   server.handle(prepareDraft, async ({ model = defaultModel.id }, context) => {
     paseo = context.paseo;

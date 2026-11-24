@@ -5,7 +5,7 @@ import {
 } from "@getpaseo/plugin/client/ui";
 import { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { defaultModel, listPresets, preferences, providerId, type BackendCost, type Preset } from "../shared/settings";
+import { defaultModel, listPresets, parseChain, preferences, providerId, pruneMappings, type BackendCost, type Preset } from "../shared/settings";
 import { formatChain, moveRow, readRows, searchModels, type CatalogModel, type ChainRow } from "./chain-picker";
 import { ChainCheck } from "./chain-check";
 import { Usage } from "./usage";
@@ -83,11 +83,18 @@ function RoutingForm({ settings, theme, selectedId, setSelectedId }: {
   })));
   const preset = presets.find(({ id }) => id === selectedId) ?? presets[0];
   const base = preset.id === defaultModel.id;
-  const complete = presets.map(({ rows, ...route }) => ({
-    ...route,
-    chain: formatChain(rows),
-    costs: Object.fromEntries(rows.flatMap(({ provider, model, cost }) => cost ? [[`${provider}/${model}`, cost]] : [])),
-  }));
+  const complete = presets.map(({ rows, mappings, ...route }) => {
+    const chain = formatChain(rows);
+    // Prune only while serializing a complete chain; an unfinished row keeps its
+    // mappings so adding or changing a backend cannot silently discard them.
+    const kept = chain === null ? mappings : pruneMappings(mappings, parseChain(chain));
+    return {
+      ...route,
+      chain,
+      costs: Object.fromEntries(rows.flatMap(({ provider, model, cost }) => cost ? [[`${provider}/${model}`, cost]] : [])),
+      mappings: kept?.length ? kept : undefined,
+    };
+  });
   const [{ id: _id, name: _name, ...primary }, ...named] = complete;
   const parsed = preferences.schema.safeParse({ ...primary, presets: named });
   const invalid = complete.find(({ chain }) => chain === null);
@@ -211,7 +218,8 @@ function ChainEditor({ preset, theme, saving, update }: {
             const id = Math.max(-1, ...rows.map(({ id }) => id)) + 1;
             update({ rows: [...rows, { id, provider: "", model: "" }] });
           }} />
-        <ChainCheck key={chain} chain={chain} theme={theme} />
+        <ChainCheck key={chain} chain={chain} theme={theme} saving={saving}
+          mappings={preset.mappings ?? []} onMappingsChange={(mappings) => update({ mappings })} />
       </SettingsSection>
       <SettingsSection title="Routing policy">
         <SettingsSelect label="Billing policy" hint="Mark Free only for backends that cannot incur charges on this host."

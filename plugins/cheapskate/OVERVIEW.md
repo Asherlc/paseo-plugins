@@ -2,7 +2,9 @@ Cheapskate adds a model to Paseo's regular picker. The model runs on an ordered 
 
 ## Setup
 
-Requires Paseo 0.16.1 or later. Open Settings → Plugins → Cheapskate and choose a provider and model for each entry in your fallback chain. Each backend uses the accounts and defaults already configured for that provider. Check chain shows which models are listed and how the first choice’s permission mode maps to the fallbacks, without sending a model request. You can opt in to switching on provider overload.
+Requires Paseo 0.16.1 or later. Open Settings → Plugins → Cheapskate and choose a provider and model for each entry in your fallback chain. Each backend uses the accounts and defaults already configured for that provider. Check chain shows which models are listed and how the selected source backend’s permission mode maps to the fallbacks, without sending a model request. You can opt in to switching on provider overload.
+
+In Check chain, pick a source backend and permission mode, then set **Explicit mode** on a fallback to save a permission mapping. It is used only when no safe automatic match exists, and mappings for backends removed from the chain are dropped.
 
 Each named chain has its own model entry in Paseo’s picker. Set its billing policy to allow configured backends, ask before sending a message to a paid or unclassified backend, or run only on backends you have marked free. Confirm that the billing labels match the accounts configured on the host.
 

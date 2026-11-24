@@ -5,6 +5,7 @@ import type {
   ProviderOptionControl,
   ProviderThinkingOption,
 } from "@getpaseo/plugin/server/provider";
+import { findMapping, type ModeMappings } from "../shared/settings.ts";
 
 export type Options = NonNullable<ProviderConfigState["providerOptions"]>;
 type ModeCatalog = { id: string; family: string; modes: readonly ProviderMode[] };
@@ -57,14 +58,19 @@ export function closestMode(
     if (desired && !destination.modes.some(({ id }) => id === desired)) return null;
     return desired;
   }
-  const rank = desired ? permissionRanks[source.family]?.[desired] : undefined;
-  if (rank === undefined) return null;
+  // Provider and mode IDs are arbitrary strings: constructor/name/length are
+  // valid and must resolve only through own properties, never the prototype.
+  const sourceRanks = Object.hasOwn(permissionRanks, source.family) ? permissionRanks[source.family] : undefined;
+  const rank = desired && sourceRanks && Object.hasOwn(sourceRanks, desired)
+    ? sourceRanks[desired] : undefined;
+  if (typeof rank !== "number" || !Number.isFinite(rank)) return null;
   if (source.family === destination.family && destination.modes.some(({ id }) => id === desired)) return desired;
   // The Codex workspace sandbox has no writable equivalent in these other providers.
   const ceiling = source.family === "codex" && destination.family !== "codex" && rank < 4 ? 0 : rank;
-  const ranks = permissionRanks[destination.family];
+  const ranks = Object.hasOwn(permissionRanks, destination.family) ? permissionRanks[destination.family] : undefined;
+  if (!ranks) return null;
   return destination.modes
-    .filter(({ id }) => ranks && Object.hasOwn(ranks, id) && ranks[id] <= ceiling)
+    .filter(({ id }) => Object.hasOwn(ranks, id) && ranks[id] <= ceiling)
     .sort((a, b) => ranks[b.id] - ranks[a.id])[0]?.id ?? null;
 }
 
@@ -100,6 +106,33 @@ export function routePermissions(
   if (mode === null) return null;
   const mapped = fallbackOptions(source, destination, options, mode);
   return mapped === null ? null : { mode, options: mapped };
+}
+
+// Explicit mappings are a fallback for turns the automatic router cannot map.
+// They require the BackendControls path, where selection and options are present,
+// so the destination keeps its own options instead of inheriting the source's.
+export function resolveBackendPermissions(
+  source: BackendControls, destination: BackendControls, desired: string | undefined,
+  options: Options, mappings?: ModeMappings,
+) {
+  const automatic = routePermissions(desired, source, destination, options);
+  if (automatic) return automatic;
+  if (!mappings) return null;
+  // The empty mode is an internal sentinel for a source that lists no modes. A
+  // source with modes must name one of them; undefined is not a mode-less source.
+  const sourceMode = source.modes.length
+    ? desired && source.modes.some(({ id }) => id === desired) ? desired : undefined
+    : "";
+  if (sourceMode === undefined) return null;
+  const explicit = findMapping(mappings, source.selection, sourceMode, destination.selection);
+  if (!explicit) return null;
+  const { destinationMode } = explicit;
+  // Empty means the destination's provider default, which exists only while the
+  // destination lists no modes. If modes appeared since the mapping was saved,
+  // the mode is stale and the backend must be skipped.
+  if (!destinationMode) return destination.modes.length ? null : { mode: undefined, options: destination.options };
+  if (!destination.modes.some(({ id }) => id === destinationMode)) return null;
+  return { mode: destinationMode, options: destination.options };
 }
 
 export async function readControls(

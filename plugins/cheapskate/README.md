@@ -20,7 +20,9 @@ If you installed Cheapskate from a local directory or directly from the former `
 
 Open **Settings → Plugins → Cheapskate** on that host. Select **Add backend**, choose a provider and a model, then arrange the entries in the order Cheapskate should try them. Save to apply the chain. The pickers use that host’s catalog. If a saved provider or model becomes unavailable, its entry stays in the chain until you replace or remove it.
 
-Use **Check chain** to see which models are listed and how the first choice’s permission mode maps to each fallback. The check uses provider defaults and makes no model requests. Account access and remaining quota are determined when a backend runs a turn.
+Use **Check chain** to see which models are listed and how the selected source backend’s permission mode maps to each fallback. The check uses provider defaults and makes no model requests. Account access and remaining quota are determined when a backend runs a turn.
+
+Choose a **Source backend** and **Source permission mode** in the check results, then set **Explicit mode** on a fallback. Cheapskate uses that mapping when it cannot find a safe automatic match. The destination uses its own provider defaults. Choose a mode with appropriate restrictions for that backend and click **Save**. Select **Automatic** to clear a mapping. If a saved mode becomes unavailable, choose a mode the provider still offers. Removing a backend clears its mappings when you save.
 
 Use **Add chain** to give another route its own name, backends, and routing policy. Saved chains appear as separate models under the Cheapskate provider. Each named chain keeps its CLI model ID when renamed. The settings screen shows that ID beside its name. If a chain’s first eligible backend uses different permission modes, the draft offers a picker for that chain’s modes.
 
