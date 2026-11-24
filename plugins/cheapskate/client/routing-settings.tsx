@@ -92,7 +92,7 @@ function RoutingForm({ settings, theme, selectedId, setSelectedId }: {
       ...route,
       chain,
       costs: Object.fromEntries(rows.flatMap(({ provider, model, cost }) => cost ? [[`${provider}/${model}`, cost]] : [])),
-      mappings: kept?.length ? kept : undefined,
+      ...(kept?.length ? { mappings: kept } : {}),
     };
   });
   const [{ id: _id, name: _name, ...primary }, ...named] = complete;
