@@ -10,6 +10,7 @@ import type { PaseoApi } from "../server/backend.ts";
 import { createProvider, ownerEnvKey } from "../server/provider.ts";
 import { createUsageStore } from "../server/usage.ts";
 import type { Receipt } from "../shared/receipt.ts";
+import { chainSettings } from "../shared/settings.ts";
 
 test("a profile lookup can discover OpenCode Auto-accept before an agent exists", async () => {
   const provider = createProvider({
@@ -49,6 +50,104 @@ test("a profile lookup can discover OpenCode Auto-accept before an agent exists"
 
     await connection.send({ type: "session.close", requestId: "close", sessionId: "profile-lookup" });
     assert.ok(events.some((event) => event.type === "session.closed"));
+  } finally {
+    await connection.close();
+  }
+});
+
+test("an explicit mode mapping is used on an actual fallback turn", { timeout: 5000 }, async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "cheapskate-mapping-"));
+  const previousHome = process.env.PASEO_HOME;
+  process.env.PASEO_HOME = home;
+  t.after(async () => {
+    if (previousHome === undefined) delete process.env.PASEO_HOME;
+    else process.env.PASEO_HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
+  });
+  const sourceSelection = "custom.provider/source-model";
+  const destSelection = "other_provider/dest-model";
+  const models: Record<string, { id: string; label: string; modes: string[] }> = {
+    "custom.provider": { id: "source-model", label: "Source", modes: ["x"] },
+    other_provider: { id: "dest-model", label: "Dest", modes: ["y"] },
+  };
+  const owner = {
+    agent: { workspaceId: "workspace", metadata: {} },
+    refresh: async () => owner,
+    setMetadata: async () => {},
+    timeline: { append: async () => {} },
+  };
+  const launches: { provider: string; modeId: string; options: unknown; toolPolicy: unknown }[] = [];
+  const toolPolicy = { preapproved: [{ kind: "mcp" as const, server: "test", tool: "read" }] };
+  type BackendEvent = { event: { type: "turn_started" | "turn_completed" | "turn_failed"; turnId: string; error?: string } };
+  const paseo = {
+    agents: { ref: (id: string) => id === "owner-mapping" ? owner : { refresh: async () => null } },
+    config: { get: async () => ({ config: {} }) },
+    providers: {
+      listModels: async (provider: string) => ({
+        models: [{ id: models[provider].id, label: models[provider].label }],
+      }),
+      listModes: async (provider: string) => ({ modes: models[provider].modes.map((id) => ({ id, label: id })) }),
+      listControls: async ({ provider }: { provider: string }) => ({ options: provider === destSelection ? { permission: "ask" } : {} }),
+      snapshot: async () => ({ entries: [] }),
+    },
+    workspaces: { ref: () => ({
+      agents: { create: async ({ agentId, config }: { agentId: string; config: {
+        provider: string; modeId: string; options: unknown; toolPolicy: unknown;
+      } }) => {
+        launches.push({ provider: config.provider, modeId: config.modeId, options: config.options, toolPolicy: config.toolPolicy });
+        let listener: (value: BackendEvent) => void;
+        return {
+          id: agentId,
+          refresh: async () => null,
+          timeline: { subscribe: (callback: typeof listener) => {
+            listener = callback;
+            return Object.assign(() => {}, { ready: Promise.resolve() });
+          } },
+          send: async () => {
+            listener({ event: { type: "turn_started", turnId: agentId } });
+            const failed: BackendEvent["event"] = { type: "turn_failed", turnId: agentId, error: "Rate limit exceeded" };
+            const completed: BackendEvent["event"] = { type: "turn_completed", turnId: agentId };
+            listener({ event: config.provider === sourceSelection ? failed : completed });
+          },
+        };
+      } },
+    }) },
+  } as unknown as PaseoApi;
+  const provider = createProvider({
+    getPaseo: () => paseo,
+    getPresets: async () => [{
+      id: "cheapskate", name: "Cheapskate",
+      ...chainSettings.parse({
+        chain: `${sourceSelection}\n${destSelection}`,
+        mappings: [{ source: sourceSelection, sourceMode: "x", destination: destSelection, destinationMode: "y" }],
+      }),
+    }],
+  });
+  const connection = await provider.connect({ versions: [PROVIDER_PROTOCOL_VERSION], capabilities: [] });
+  const finished = Promise.withResolvers<Extract<ProviderEvent, { type: "session.turn" }>>();
+  connection.onEvent((event) => {
+    if (event.type === "session.turn" && event.state !== "started") finished.resolve(event);
+  });
+  try {
+    await connection.send({
+      type: "session.open", requestId: "open", sessionId: "session", history: "skip",
+      config: {
+        cwd: home, env: { [ownerEnvKey]: "owner-mapping" }, mcpServers: {}, model: "cheapskate",
+        mode: "x", persist: true, settings: {}, providerOptions: {}, toolPolicy,
+      },
+    });
+    await connection.send({
+      type: "session.prompt", sessionId: "session",
+      prompt: {
+        clientMessageId: "message", delivery: "auto",
+        input: { type: "message", content: [{ type: "text", text: "Hello" }] },
+      },
+    });
+    assert.equal((await finished.promise).state, "completed");
+    assert.deepEqual(launches, [
+      { provider: sourceSelection, modeId: "x", options: {}, toolPolicy },
+      { provider: destSelection, modeId: "y", options: { permission: "ask" }, toolPolicy },
+    ], "the fallback uses the saved explicit mode, its own provider defaults, and the original tool policy");
   } finally {
     await connection.close();
   }

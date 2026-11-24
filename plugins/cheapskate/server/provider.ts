@@ -20,7 +20,7 @@ import { activeRoute, activeRouteKey, handledPrimaryKey, primaryRequestKey, quot
 import { receiptKind, receiptSchema, type Receipt, type RouteStep } from "../shared/receipt.ts";
 import { parseMessage, runBackend, type PaseoApi } from "./backend.ts";
 import { createCheckpoint, type Checkpoint } from "./checkpoint.ts";
-import { closestThinking, readControls, routePermissions, type BackendControls, type Options } from "./controls.ts";
+import { closestThinking, readControls, resolveBackendPermissions, type BackendControls, type Options } from "./controls.ts";
 import type { UsageStore } from "./usage.ts";
 import { canFallback, handoffPrompt, providerResetAt, startingBackend } from "./routing.ts";
 
@@ -614,7 +614,7 @@ class Session {
       }
       const permissions = selection === source.selection
         ? { mode: intent.mode, options: intent.options }
-        : routePermissions(intent.mode, source, backend, intent.options);
+        : resolveBackendPermissions(source, backend, intent.mode, intent.options, preset.mappings);
       if (!permissions) {
         step(turn, backend.label, "permissions");
         if (!change || change.reason === "requested" || change.reason === "removed") {

@@ -11,11 +11,46 @@ export function parseChain(text: string) {
 const billing = z.enum(["allow", "ask", "free-only"]);
 const cost = z.enum(["free", "paid"]);
 
+// Saved explicit permission mappings. A flat, structured list keeps lookups exact:
+// native mode IDs are arbitrary strings and can collide with inherited object keys
+// such as constructor, so no dynamic-key record is used. An empty sourceMode is a
+// mode-less source, and an empty destinationMode is a mode-less destination.
+// Entries are deliberately not cross-checked against the current chain so
+// reordering or removing rows cannot make previously saved settings invalid.
+export const modeMapping = z.object({
+  source: z.string(),
+  sourceMode: z.string(),
+  destination: z.string(),
+  destinationMode: z.string(),
+});
+export type ModeMapping = z.output<typeof modeMapping>;
+export type ModeMappings = ModeMapping[];
+// Optional so legacy saved settings and typed fixtures stay valid unchanged.
+export const modeMappings = z.array(modeMapping).optional();
+
+export function findMapping(
+  mappings: ModeMappings | undefined,
+  source: string, sourceMode: string, destination: string,
+): ModeMapping | undefined {
+  return mappings?.find((mapping) => mapping.source === source
+    && mapping.sourceMode === sourceMode && mapping.destination === destination);
+}
+
+// Mappings are scoped to the selections in their chain, so removed or replaced
+// rows must not leave stale records behind on save or chain edits.
+export function pruneMappings(mappings: ModeMappings | undefined, chain: string[]): ModeMappings {
+  const selections = new Set(chain);
+  return (mappings ?? []).filter(({ source, destination }) =>
+    selections.has(source) && selections.has(destination));
+}
+
 export const chainSettings = z.object({
     chain: z.string().max(4096).default("").superRefine((text, context) => {
       const chain = parseChain(text);
+      // Match Paseo's provider ID syntax (including dots and underscores used by
+      // plugin providers) while leaving the model ID syntax unchanged.
       const invalid = chain.find(
-        (entry) => !/^[a-z][a-z0-9-]*\/\S+$/.test(entry) || entry.startsWith(providerId + "/"),
+        (entry) => !/^[a-z][a-z0-9._-]*\/\S+$/.test(entry) || entry.startsWith(providerId + "/"),
       );
       if (invalid) {
         context.addIssue({ code: "custom", message: "Choose a provider and model for every entry. Cheapskate cannot route to itself." });
@@ -27,6 +62,7 @@ export const chainSettings = z.object({
     autoReturn: z.boolean().default(false),
     billing: billing.default("allow"),
     costs: z.record(z.string(), cost).default({}),
+    mappings: modeMappings,
 });
 
 const namedPreset = chainSettings.extend({
