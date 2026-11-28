@@ -74,9 +74,9 @@ export async function runBackend({
   }
 
   function flushCursorPlanNotice() {
-    if (!checkingCursorPlanNotice) return;
+    if (!checkingCursorPlanNotice || textItem?.type !== "assistant_message") return;
     checkingCursorPlanNotice = false;
-    if (textItem) publishText(textItem);
+    publishText(textItem);
   }
 
   function forward(event: unknown) {
@@ -107,7 +107,7 @@ export async function runBackend({
     switch (event.type) {
       case "turn_completed": {
         // Cursor sends this limit as assistant text followed by a normal completion.
-        if (checkingCursorPlanNotice && textItem?.text.trim() === cursorPlanNotice) {
+        if (checkingCursorPlanNotice && textItem?.type === "assistant_message" && textItem.text.trim() === cursorPlanNotice) {
           checkingCursorPlanNotice = false;
           completion.resolve({ state: "failed", error: { message: cursorPlanNotice, code: "usage_limit_reached" } });
           break;
@@ -154,12 +154,14 @@ export async function runBackend({
           if (item.type === "assistant_message" && item.text.startsWith("[System Error]")) break;
           const key = item.type === "assistant_message" ? item.messageId : undefined;
           if (textItem?.type !== item.type || textItem.key !== key) {
-            if (textItem || item.type === "reasoning") flushCursorPlanNotice();
+            flushCursorPlanNotice();
             textItem = { type: item.type, key, id: prefix + crypto.randomUUID(), text: "" };
           }
           textItem.text += item.text;
-          if (checkingCursorPlanNotice && cursorPlanNotice.startsWith(textItem.text.trim())) break;
-          checkingCursorPlanNotice = false;
+          if (checkingCursorPlanNotice && item.type === "assistant_message") {
+            if (cursorPlanNotice.startsWith(textItem.text.trim())) break;
+            checkingCursorPlanNotice = false;
+          }
           publishText(textItem);
           break;
         }

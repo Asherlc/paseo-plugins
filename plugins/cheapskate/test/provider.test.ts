@@ -61,8 +61,11 @@ test("Cursor's plan notice falls through on the same turn using an explicit mode
 test("a Cursor answer starting with the plan notice stays on Cursor", { timeout: 5000 }, (t) =>
   assertCursorRouting(t, { lastChunk: "plan to continue is a message you might see.", fallsThrough: false }));
 
+test("the Cursor plan notice in reasoning alone stays on Cursor", { timeout: 5000 }, (t) =>
+  assertCursorRouting(t, { lastChunk: null, fallsThrough: false }));
+
 async function assertCursorRouting(t: TestContext, { lastChunk, fallsThrough }: {
-  lastChunk: string;
+  lastChunk: string | null;
   fallsThrough: boolean;
 }) {
   const home = await mkdtemp(join(tmpdir(), "cheapskate-mapping-"));
@@ -90,7 +93,9 @@ async function assertCursorRouting(t: TestContext, { lastChunk, fallsThrough }: 
   const toolPolicy = { preapproved: [{ kind: "mcp" as const, server: "test", tool: "read" }] };
   type BackendEvent = { event:
     | { type: "turn_started" | "turn_completed"; turnId: string }
-    | { type: "timeline"; turnId: string; item: { type: "assistant_message"; text: string; messageId: string } }
+    | { type: "timeline"; turnId: string; item:
+      | { type: "assistant_message"; text: string; messageId: string }
+      | { type: "reasoning"; text: string } }
   };
   const paseo = {
     agents: { ref: (id: string) => id === "owner-mapping" ? owner : { refresh: async () => null } },
@@ -118,8 +123,12 @@ async function assertCursorRouting(t: TestContext, { lastChunk, fallsThrough }: 
           } },
           send: async () => {
             listener({ event: { type: "turn_started", turnId: agentId } });
-            const chunks = config.provider === sourceSelection
-              ? ["\n\nUpgrade your ", lastChunk] : ["Fallback answer"];
+            const isCursor = config.provider === sourceSelection;
+            if (isCursor) {
+              listener({ event: { type: "timeline", turnId: agentId,
+                item: { type: "reasoning", text: "Upgrade your plan to continue" } } });
+            }
+            const chunks = !isCursor ? ["Fallback answer"] : lastChunk === null ? [] : ["\n\nUpgrade your ", lastChunk];
             for (const text of chunks) {
               listener({ event: { type: "timeline", turnId: agentId,
                 item: { type: "assistant_message", text, messageId: agentId } } });
@@ -168,7 +177,8 @@ async function assertCursorRouting(t: TestContext, { lastChunk, fallsThrough }: 
       ...(fallsThrough ? [{ provider: destSelection, modeId: "y", options: { permission: "ask" }, toolPolicy }] : []),
     ], "the fallback uses the saved explicit mode, its own provider defaults, and the original tool policy");
     assert.deepEqual(receipts[0]?.steps.map(({ result }) => result), fallsThrough ? ["limit", "answered"] : ["answered"]);
-    assert.deepEqual(replies, fallsThrough ? ["Fallback answer"] : [`\n\nUpgrade your ${lastChunk}`]);
+    if (fallsThrough) assert.deepEqual(replies, ["Fallback answer"]);
+    else assert.equal(replies.at(-1), lastChunk === null ? undefined : `\n\nUpgrade your ${lastChunk}`);
   } finally {
     await connection.close();
   }
