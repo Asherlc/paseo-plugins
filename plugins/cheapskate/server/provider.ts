@@ -720,7 +720,7 @@ class Session {
           text: handoffPrompt(this.state.items.filter((item) => item.id !== `user:${turn.id}`), message.text),
         };
         const outcome = await runBackend({
-          agent, sessionId: this.id, turnId: turn.id, attemptId, message: prompt, signal,
+          agent, backendFamily: backend.family, sessionId: this.id, turnId: turn.id, attemptId, message: prompt, signal,
           emit: (event) => event.type === "timeline.item" ? this.record(event.item) : this.emit(event),
         });
         if (outcome.state === "completed") {

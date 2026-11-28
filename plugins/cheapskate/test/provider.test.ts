@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { PROVIDER_PROTOCOL_VERSION, type ProviderEvent } from "@getpaseo/plugin/server/provider";
 import type { PaseoApi } from "../server/backend.ts";
 import { createProvider, ownerEnvKey } from "../server/provider.ts";
@@ -55,7 +55,16 @@ test("a profile lookup can discover OpenCode Auto-accept before an agent exists"
   }
 });
 
-test("an explicit mode mapping is used on an actual fallback turn", { timeout: 5000 }, async (t) => {
+test("Cursor's plan notice falls through on the same turn using an explicit mode mapping", { timeout: 5000 }, (t) =>
+  assertCursorRouting(t, { lastChunk: "plan to continue", fallsThrough: true }));
+
+test("a Cursor answer starting with the plan notice stays on Cursor", { timeout: 5000 }, (t) =>
+  assertCursorRouting(t, { lastChunk: "plan to continue is a message you might see.", fallsThrough: false }));
+
+async function assertCursorRouting(t: TestContext, { lastChunk, fallsThrough }: {
+  lastChunk: string;
+  fallsThrough: boolean;
+}) {
   const home = await mkdtemp(join(tmpdir(), "cheapskate-mapping-"));
   const previousHome = process.env.PASEO_HOME;
   process.env.PASEO_HOME = home;
@@ -64,21 +73,25 @@ test("an explicit mode mapping is used on an actual fallback turn", { timeout: 5
     else process.env.PASEO_HOME = previousHome;
     await rm(home, { recursive: true, force: true });
   });
-  const sourceSelection = "custom.provider/source-model";
+  const sourceSelection = "cursor/default";
   const destSelection = "other_provider/dest-model";
   const models: Record<string, { id: string; label: string; modes: string[] }> = {
-    "custom.provider": { id: "source-model", label: "Source", modes: ["x"] },
+    cursor: { id: "default", label: "Auto", modes: ["agent"] },
     other_provider: { id: "dest-model", label: "Dest", modes: ["y"] },
   };
+  const receipts: Receipt[] = [];
   const owner = {
     agent: { workspaceId: "workspace", metadata: {} },
     refresh: async () => owner,
     setMetadata: async () => {},
-    timeline: { append: async () => {} },
+    timeline: { append: async ({ data }: { data: Receipt }) => { receipts.push(data); } },
   };
   const launches: { provider: string; modeId: string; options: unknown; toolPolicy: unknown }[] = [];
   const toolPolicy = { preapproved: [{ kind: "mcp" as const, server: "test", tool: "read" }] };
-  type BackendEvent = { event: { type: "turn_started" | "turn_completed" | "turn_failed"; turnId: string; error?: string } };
+  type BackendEvent = { event:
+    | { type: "turn_started" | "turn_completed"; turnId: string }
+    | { type: "timeline"; turnId: string; item: { type: "assistant_message"; text: string; messageId: string } }
+  };
   const paseo = {
     agents: { ref: (id: string) => id === "owner-mapping" ? owner : { refresh: async () => null } },
     config: { get: async () => ({ config: {} }) },
@@ -105,9 +118,13 @@ test("an explicit mode mapping is used on an actual fallback turn", { timeout: 5
           } },
           send: async () => {
             listener({ event: { type: "turn_started", turnId: agentId } });
-            const failed: BackendEvent["event"] = { type: "turn_failed", turnId: agentId, error: "Rate limit exceeded" };
-            const completed: BackendEvent["event"] = { type: "turn_completed", turnId: agentId };
-            listener({ event: config.provider === sourceSelection ? failed : completed });
+            const chunks = config.provider === sourceSelection
+              ? ["\n\nUpgrade your ", lastChunk] : ["Fallback answer"];
+            for (const text of chunks) {
+              listener({ event: { type: "timeline", turnId: agentId,
+                item: { type: "assistant_message", text, messageId: agentId } } });
+            }
+            listener({ event: { type: "turn_completed", turnId: agentId } });
           },
         };
       } },
@@ -119,13 +136,15 @@ test("an explicit mode mapping is used on an actual fallback turn", { timeout: 5
       id: "cheapskate", name: "Cheapskate",
       ...chainSettings.parse({
         chain: `${sourceSelection}\n${destSelection}`,
-        mappings: [{ source: sourceSelection, sourceMode: "x", destination: destSelection, destinationMode: "y" }],
+        mappings: [{ source: sourceSelection, sourceMode: "agent", destination: destSelection, destinationMode: "y" }],
       }),
     }],
   });
   const connection = await provider.connect({ versions: [PROVIDER_PROTOCOL_VERSION], capabilities: [] });
   const finished = Promise.withResolvers<Extract<ProviderEvent, { type: "session.turn" }>>();
+  const replies: string[] = [];
   connection.onEvent((event) => {
+    if (event.type === "timeline.item" && event.item.type === "assistant_message") replies.push(event.item.text);
     if (event.type === "session.turn" && event.state !== "started") finished.resolve(event);
   });
   try {
@@ -133,7 +152,7 @@ test("an explicit mode mapping is used on an actual fallback turn", { timeout: 5
       type: "session.open", requestId: "open", sessionId: "session", history: "skip",
       config: {
         cwd: home, env: { [ownerEnvKey]: "owner-mapping" }, mcpServers: {}, model: "cheapskate",
-        mode: "x", persist: true, settings: {}, providerOptions: {}, toolPolicy,
+        mode: "agent", persist: true, settings: {}, providerOptions: {}, toolPolicy,
       },
     });
     await connection.send({
@@ -145,13 +164,15 @@ test("an explicit mode mapping is used on an actual fallback turn", { timeout: 5
     });
     assert.equal((await finished.promise).state, "completed");
     assert.deepEqual(launches, [
-      { provider: sourceSelection, modeId: "x", options: {}, toolPolicy },
-      { provider: destSelection, modeId: "y", options: { permission: "ask" }, toolPolicy },
+      { provider: sourceSelection, modeId: "agent", options: {}, toolPolicy },
+      ...(fallsThrough ? [{ provider: destSelection, modeId: "y", options: { permission: "ask" }, toolPolicy }] : []),
     ], "the fallback uses the saved explicit mode, its own provider defaults, and the original tool policy");
+    assert.deepEqual(receipts[0]?.steps.map(({ result }) => result), fallsThrough ? ["limit", "answered"] : ["answered"]);
+    assert.deepEqual(replies, fallsThrough ? ["Fallback answer"] : [`\n\nUpgrade your ${lastChunk}`]);
   } finally {
     await connection.close();
   }
-});
+}
 
 test("a turn recovers from a timed-out workspace OpenCode catalog", async (t) => {
   const home = await mkdtemp(join(tmpdir(), "cheapskate-catalog-"));
