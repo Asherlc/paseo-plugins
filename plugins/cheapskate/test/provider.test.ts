@@ -99,7 +99,7 @@ async function assertCursorRouting(t: TestContext, { lastChunk, fallsThrough }: 
   };
   const paseo = {
     agents: { ref: (id: string) => id === "owner-mapping" ? owner : { refresh: async () => null } },
-    config: { get: async () => ({ config: {} }) },
+    config: { get: async () => ({ config: { providers: { cursor: { extends: "acp" } } } }) },
     providers: {
       listModels: async (provider: string) => ({
         models: [{ id: models[provider].id, label: models[provider].label }],

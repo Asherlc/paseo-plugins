@@ -47,10 +47,10 @@ type BackendOutcome =
 const cursorPlanNotice = "Upgrade your plan to continue";
 
 export async function runBackend({
-  agent, backendFamily, sessionId, turnId, attemptId, message, signal, emit,
+  agent, isCursor, sessionId, turnId, attemptId, message, signal, emit,
 }: {
   agent: PaseoAgentHandle;
-  backendFamily: string;
+  isCursor: boolean;
   sessionId: string;
   turnId: string;
   attemptId: string;
@@ -67,7 +67,7 @@ export async function runBackend({
   let accepting = false;
   let disconnected = false;
   let textItem: { type: "assistant_message" | "reasoning"; key?: string; id: string; text: string } | undefined;
-  let checkingCursorPlanNotice = backendFamily === "cursor";
+  let checkingCursorPlanNotice = isCursor;
 
   function publishText({ type, id, text }: NonNullable<typeof textItem>) {
     emit({ type: "timeline.item", sessionId, item: { type, id, text } });
