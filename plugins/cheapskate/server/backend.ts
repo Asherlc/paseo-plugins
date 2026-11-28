@@ -44,10 +44,13 @@ type BackendOutcome =
   | { state: "canceled" }
   | { state: "failed"; error: ProviderError };
 
+const cursorPlanNotice = "Upgrade your plan to continue";
+
 export async function runBackend({
-  agent, sessionId, turnId, attemptId, message, signal, emit,
+  agent, backendFamily, sessionId, turnId, attemptId, message, signal, emit,
 }: {
   agent: PaseoAgentHandle;
+  backendFamily: string;
   sessionId: string;
   turnId: string;
   attemptId: string;
@@ -64,6 +67,17 @@ export async function runBackend({
   let accepting = false;
   let disconnected = false;
   let textItem: { type: "assistant_message" | "reasoning"; key?: string; id: string; text: string } | undefined;
+  let checkingCursorPlanNotice = backendFamily === "cursor";
+
+  function publishText({ type, id, text }: NonNullable<typeof textItem>) {
+    emit({ type: "timeline.item", sessionId, item: { type, id, text } });
+  }
+
+  function flushCursorPlanNotice() {
+    if (!checkingCursorPlanNotice || textItem?.type !== "assistant_message") return;
+    checkingCursorPlanNotice = false;
+    publishText(textItem);
+  }
 
   function forward(event: unknown) {
     const parsed = ProviderEventSchema.safeParse(event);
@@ -92,6 +106,13 @@ export async function runBackend({
 
     switch (event.type) {
       case "turn_completed": {
+        // Cursor sends this limit as assistant text followed by a normal completion.
+        if (checkingCursorPlanNotice && textItem?.type === "assistant_message" && textItem.text.trim() === cursorPlanNotice) {
+          checkingCursorPlanNotice = false;
+          completion.resolve({ state: "failed", error: { message: cursorPlanNotice, code: "usage_limit_reached" } });
+          break;
+        }
+        flushCursorPlanNotice();
         const usage = event.usage;
         if (usage) emit({ type: "session.usage", sessionId, turnId, usage });
         completion.resolve({ state: "completed", usage });
@@ -104,6 +125,7 @@ export async function runBackend({
         completion.resolve({ state: "failed", error: { message: event.error, code: event.code, diagnostic: event.diagnostic } });
         break;
       case "permission_requested": {
+        flushCursorPlanNotice();
         const { id, name, kind, title, description, actions } = event.request;
         pending.add(id);
         const permissionId = prefix + id;
@@ -132,12 +154,18 @@ export async function runBackend({
           if (item.type === "assistant_message" && item.text.startsWith("[System Error]")) break;
           const key = item.type === "assistant_message" ? item.messageId : undefined;
           if (textItem?.type !== item.type || textItem.key !== key) {
+            flushCursorPlanNotice();
             textItem = { type: item.type, key, id: prefix + crypto.randomUUID(), text: "" };
           }
           textItem.text += item.text;
-          emit({ type: "timeline.item", sessionId, item: { type: item.type, id: textItem.id, text: textItem.text } });
+          if (checkingCursorPlanNotice && item.type === "assistant_message") {
+            if (cursorPlanNotice.startsWith(textItem.text.trim())) break;
+            checkingCursorPlanNotice = false;
+          }
+          publishText(textItem);
           break;
         }
+        flushCursorPlanNotice();
         textItem = undefined;
         const id = prefix + (item.type === "tool_call" ? item.callId : item.type);
         forward({
@@ -160,6 +188,7 @@ export async function runBackend({
   } finally {
     signal.removeEventListener("abort", cancel);
     unsubscribe();
+    flushCursorPlanNotice();
     for (const id of pending) {
       emit({ type: "session.permission_resolved", sessionId, permissionId: prefix + id });
     }
